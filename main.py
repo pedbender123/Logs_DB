@@ -1,17 +1,44 @@
-from fastapi import FastAPI, Depends, HTTPException, Header, Request
+from fastapi import FastAPI, Depends, HTTPException, Header, Request, status
 from sqlalchemy.orm import Session
-from uuid import UUID
+import secrets
+import string
+import os
 import models, schemas
 from database import engine, get_db
 
-# Create tables if they don't exist
+# Create tables
 models.Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="Log Collection System")
 
+MASTER_KEY = os.getenv("MASTER_KEY")
+
+def generate_system_id():
+    """Generates a key like pbpm-<random_64_chars>"""
+    random_str = ''.join(secrets.choice(string.ascii_letters + string.digits) for _ in range(64))
+    return f"pbpm-{random_str}"
+
+def verify_master_key(x_master_key: str = Header(..., alias="x-master-key")):
+    if x_master_key != MASTER_KEY:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid Master Key"
+        )
+    return x_master_key
+
 @app.post("/register", response_model=schemas.SystemResponse)
-def register_system(system: schemas.SystemCreate, db: Session = Depends(get_db)):
+def register_system(
+    system: schemas.SystemCreate, 
+    db: Session = Depends(get_db),
+    _: str = Depends(verify_master_key)
+):
+    new_id = generate_system_id()
+    # Ensure uniqueness (unlikely collision but good practice in real apps to check)
+    while db.query(models.System).filter(models.System.id == new_id).first():
+        new_id = generate_system_id()
+        
     db_system = models.System(
+        id=new_id,
         name=system.name,
         client_email=system.client_email,
         maintenance_email=system.maintenance_email
@@ -24,23 +51,14 @@ def register_system(system: schemas.SystemCreate, db: Session = Depends(get_db))
 @app.post("/webhook")
 def collect_log(
     log: schemas.LogCreate, 
-    x_api_key: str = Header(..., alias="x-api-key"), # Using header for clean separation
+    x_api_key: str = Header(..., alias="x-api-key"),
     db: Session = Depends(get_db)
 ):
-    # Verify API Key (System ID)
-    try:
-        system_uuid = UUID(x_api_key)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid API Key format")
-
-    system = db.query(models.System).filter(models.System.id == system_uuid).first()
+    system = db.query(models.System).filter(models.System.id == x_api_key).first()
     if not system:
         raise HTTPException(status_code=401, detail="Invalid API Key")
 
-    # Store Log
     import json
-    # Ensure content is stored as string if it's a dict, or just store as is if using JSONB in future
-    # For now, models.Log.content is Text.
     content_str = json.dumps(log.content) if isinstance(log.content, dict) else str(log.content)
     
     new_log = models.Log(
