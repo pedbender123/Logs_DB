@@ -6,8 +6,24 @@ import os
 import models, schemas
 from database import engine, get_db
 
-# Create tables
-models.Base.metadata.create_all(bind=engine)
+# Create tables with retry logic
+import time
+from sqlalchemy.exc import OperationalError
+
+MAX_RETRIES = 60
+RETRY_DELAY = 1
+
+for i in range(MAX_RETRIES):
+    try:
+        models.Base.metadata.create_all(bind=engine)
+        print("Database connected and tables created.")
+        break
+    except OperationalError:
+        if i == MAX_RETRIES - 1:
+            print("Could not connect to database after multiple retries.")
+            raise
+        print(f"Database not ready, retrying in {RETRY_DELAY}s...")
+        time.sleep(RETRY_DELAY)
 
 app = FastAPI(title="Log Collection System")
 
