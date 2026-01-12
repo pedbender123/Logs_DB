@@ -75,12 +75,22 @@ def collect_log(
         raise HTTPException(status_code=401, detail="Invalid API Key")
 
     import json
-    content_str = json.dumps(log.content) if isinstance(log.content, dict) else str(log.content)
     
-    new_log = models.Log(
-        system_id=system.id,
-        content=content_str
-    )
+    # Store structured data in the content column
+    log_data = {
+        "message": log.message,
+        "container": log.container
+    }
+    content_str = json.dumps(log_data, default=str)
+    
+    new_log_data = {
+        "system_id": system.id,
+        "content": content_str
+    }
+    if log.created_at:
+        new_log_data["created_at"] = log.created_at
+
+    new_log = models.Log(**new_log_data)
     db.add(new_log)
     db.commit()
     db.refresh(new_log)

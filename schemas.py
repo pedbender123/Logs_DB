@@ -14,7 +14,9 @@ class SystemResponse(SystemCreate):
         from_attributes = True
 
 class LogCreate(BaseModel):
-    content: dict | str
+    message: dict | str
+    container: str | None = None
+    created_at: datetime | None = None
 
 class LogResponse(BaseModel):
     id: int
