@@ -36,9 +36,9 @@ Este sistema é uma plataforma avançada de coleta, análise e gerenciamento de 
 Recebe os logs externos.
 - **Headers**: `x-api-key: <SYSTEM_ID>`
 - **Body**:
-    location / {
-        proxy_pass http://localhost:3000; # Porta do container Frontend
-to JSON",
+  ```json
+  {
+    "message": "Mensagem do log ou objeto JSON",
     "level": "info|warning|erro|sucesso",
     "container": "nome_do_servico"
   }
@@ -79,7 +79,7 @@ Registra um novo sistema (Protegido por `MASTER_KEY`).
 
 - **Ver Logs dos Containers**: `docker compose logs -f`
 - **Acessar Banco de Dados**: Porta `5432` (Postgres).
-- **Frontend**: Porta `3000` (Produção) / `5173` (Dev).
+- **Frontend**: Porta `3002` (Produção) / `5173` (Dev).
 - **Backend API**: Porta `8001` (Exposta via Docker).
 
 ---
