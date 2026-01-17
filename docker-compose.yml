@@ -16,7 +16,7 @@ services:
     build: .
     environment:
       - DATABASE_URL=postgresql://pbpm_user:pbpm_pass@db:5432/logs_db
-      - MASTER_KEY=pbpm_secret_master_key
+      - MASTER_KEY=${MASTER_KEY}
       - OLLAMA_URL=http://host.docker.internal:11434
       - OPENAI_API_KEY=${OPENAI_API_KEY}
     depends_on:
