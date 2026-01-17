@@ -1,23 +1,40 @@
+version: '3.8'
+
 services:
-  web:
-    build: .
-    ports:
-      - "127.0.0.1:8000:8000"
-    environment:
-      - DATABASE_URL=postgresql://postgres:password@db:5432/logs_db
-    depends_on:
-      - db
-    
   db:
     image: postgres:15
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: password
-      POSTGRES_DB: logs_db
+      - POSTGRES_USER=pbpm_user
+      - POSTGRES_PASSWORD=pbpm_pass
+      - POSTGRES_DB=logs_db
     ports:
-      - "127.0.0.1:5433:5432"
+      - "5432:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - pgdata:/var/lib/postgresql/data
+
+  backend:
+    build: .
+    environment:
+      - DATABASE_URL=postgresql://pbpm_user:pbpm_pass@db:5432/logs_db
+      - MASTER_KEY=pbpm_secret_master_key
+      - OLLAMA_URL=http://host.docker.internal:11434
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+    depends_on:
+      - db
+    ports:
+      - "8001:8000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  frontend:
+    build:
+      context: ./dashboard
+      args:
+        - VITE_API_URL=http://localhost:8001
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
 
 volumes:
-  postgres_data:
+  pgdata:
