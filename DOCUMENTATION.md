@@ -30,6 +30,45 @@ Este sistema é uma plataforma avançada de coleta, análise e gerenciamento de 
 
 ---
 
+## 🌐 Configuração do Nginx (Multi-domínio)
+
+O sistema utiliza dois subdomínios separados. O Docker expõe apenas para o `localhost` da VPS por segurança.
+
+### 1. Frontend (`app.pbpmdev.com`)
+```nginx
+server {
+    listen 80;
+    server_name app.pbpmdev.com;
+
+    location / {
+        proxy_pass http://localhost:3002;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_cache_bypass $http_upgrade;
+    }
+}
+```
+
+### 2. Backend API (`api.pbpmdev.com`)
+```nginx
+server {
+    listen 80;
+    server_name api.pbpmdev.com;
+
+    location / {
+        proxy_pass http://localhost:8000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+```
+
+---
+
 ## 📡 Endpoints Principais da API
 
 ### `POST /webhook`
@@ -79,8 +118,8 @@ Registra um novo sistema (Protegido por `MASTER_KEY`).
 
 - **Ver Logs dos Containers**: `docker compose logs -f`
 - **Acessar Banco de Dados**: Porta `5432` (Postgres).
-- **Frontend**: Porta `3002` (Produção) / `5173` (Dev).
-- **Backend API**: Porta `8001` (Exposta via Docker).
+- **Frontend**: Porta `3002` (Interna). Acesso via Nginx.
+- **Backend API**: Porta `8000` (Interna). Acesso via Nginx (`api.pbpmdev.com`).
 
 ---
 

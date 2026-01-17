@@ -55,9 +55,11 @@ const SystemDetail = ({ apiUrl }) => {
     }, [id, apiUrl]);
 
     const handleSaveTechInfo = async () => {
+        const masterKey = prompt("Digite a Master Key para salvar alterações:");
+        if (!masterKey) return;
+
         setIsSaving(true);
         try {
-            const masterKey = "pbpm_secret_master_key";
             await axios.put(`${apiUrl}/systems/${id}`, {
                 technical_info: techInfo
             }, {
@@ -74,8 +76,10 @@ const SystemDetail = ({ apiUrl }) => {
 
     const handleAddFilter = async () => {
         if (!newFilterPattern) return;
+        const masterKey = prompt("Digite a Master Key para adicionar filtro:");
+        if (!masterKey) return;
+
         try {
-            const masterKey = "pbpm_secret_master_key";
             await axios.post(`${apiUrl}/systems/${id}/filters`, { pattern: newFilterPattern }, {
                 headers: { 'x-master-key': masterKey }
             });
@@ -88,8 +92,10 @@ const SystemDetail = ({ apiUrl }) => {
 
     const handleDeleteFilter = async (filterId) => {
         if (!window.confirm("Remover este filtro? Logs futuros com este padrão serão salvos normalmente.")) return;
+        const masterKey = prompt("Digite a Master Key para remover o filtro:");
+        if (!masterKey) return;
+
         try {
-            const masterKey = "pbpm_secret_master_key";
             await axios.delete(`${apiUrl}/systems/${id}/filters/${filterId}`, {
                 headers: { 'x-master-key': masterKey }
             });
@@ -102,9 +108,12 @@ const SystemDetail = ({ apiUrl }) => {
     const handleCleanup = async () => {
         if (!cleanupPattern) return;
         if (!window.confirm(`Isso irá apagar PERMANENTEMENTE todos os logs que contenham "${cleanupPattern}". Deseja continuar?`)) return;
+
+        const masterKey = prompt("Digite a Master Key para autorizar a limpeza em massa:");
+        if (!masterKey) return;
+
         setIsCleaning(true);
         try {
-            const masterKey = "pbpm_secret_master_key";
             const res = await axios.post(`${apiUrl}/systems/${id}/cleanup`, { pattern: cleanupPattern }, {
                 headers: { 'x-master-key': masterKey }
             });

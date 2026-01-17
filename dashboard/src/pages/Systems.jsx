@@ -14,7 +14,8 @@ const Systems = ({ apiUrl }) => {
         client_email: '',
         client_phone: '',
         maintenance_email: '',
-        status: 'development'
+        status: 'development',
+        master_key: ''
     });
     const navigate = useNavigate();
 
@@ -36,16 +37,15 @@ const Systems = ({ apiUrl }) => {
     const handleSubmit = async (e) => {
         e.preventDefault();
         try {
-            // Need MASTER_KEY for registration
-            const masterKey = "pbpm_secret_master_key";
             await axios.post(`${apiUrl}/register`, formData, {
-                headers: { 'x-master-key': masterKey }
+                headers: { 'x-master-key': formData.master_key }
             });
             setShowModal(false);
             fetchSystems();
-            setFormData({ name: '', client_name: '', client_email: '', client_phone: '', maintenance_email: '', status: 'development' });
+            setFormData({ name: '', client_name: '', client_email: '', client_phone: '', maintenance_email: '', status: 'development', master_key: '' });
         } catch (err) {
-            alert("Erro ao registrar sistema. Verifique a Master Key.");
+            console.error(err);
+            alert(`Erro ao registrar: ${err.response?.data?.detail || err.message}. Verifique a conexão e a Master Key.`);
         }
     };
 
@@ -166,6 +166,20 @@ const Systems = ({ apiUrl }) => {
                             <div className="space-y-1.5">
                                 <label className="text-xs font-bold text-slate-500 uppercase">Email do Responsável (Manutenção)</label>
                                 <input required type="email" value={formData.maintenance_email} onChange={e => setFormData({ ...formData, maintenance_email: e.target.value })} className="w-full bg-slate-800 border border-slate-700 rounded-lg p-2.5 text-sm" />
+                            </div>
+
+                            <div className="space-y-1.5 pt-4 border-t border-slate-800">
+                                <label className="text-xs font-bold text-red-400 uppercase flex items-center gap-2">
+                                    Master Key de Segurança
+                                </label>
+                                <input
+                                    required
+                                    type="password"
+                                    placeholder="Insira a chave mestra para autorizar..."
+                                    value={formData.master_key}
+                                    onChange={e => setFormData({ ...formData, master_key: e.target.value })}
+                                    className="w-full bg-slate-950 border border-red-900/30 rounded-lg p-2.5 text-sm text-red-200 focus:border-red-500 transition-colors"
+                                />
                             </div>
 
                             <div className="pt-4 flex gap-3">
