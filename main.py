@@ -9,7 +9,8 @@ import json
 import httpx
 from datetime import datetime, timedelta
 import models, schemas
-from database import engine, get_db
+import discord_client
+from database import engine, get_db, SessionLocal
 
 # Create tables with retry logic
 import time
@@ -44,32 +45,76 @@ app.add_middleware(
 MASTER_KEY = os.getenv("MASTER_KEY")
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+DISCORD_ERROR_CHANNEL_ID = os.getenv("DISCORD_ERROR_CHANNEL_ID")
+DISCORD_REPORT_CHANNEL_ID = os.getenv("DISCORD_REPORT_CHANNEL_ID")
+
 
 # Status tracking for logs being analyzed by AI
-# In a production environment, this could be Redis or a DB table
 analyzing_logs = {}
 
-async def send_report_email(to_email: str, subject: str, body: str):
-    # This is a placeholder for real email sending logic
-    # In a real scenario, you'd use a service like SendGrid, Mailgun, or SMTP
-    print(f"--- MOCK EMAIL SENT ---")
-    print(f"To: {to_email}")
-    print(f"Subject: {subject}")
-    print(f"Body: {body[:100]}...")
-    print(f"------------------------")
+async def classify_log_with_ai(log_content: str):
+    """
+    Classifies the log using OpenAI gpt-4o-mini.
+    Returns: 'normal', 'atenção', 'erro', or 'sucesso'
+    """
+    system_prompt = """You are a log classifier. 
+Your output MUST be one of these exact words:
+- normal (for routine, heartbeat, info)
+- atenção (for warning, slow, suspicious, potential issues)
+- erro (for failure, crash, 500 error, exceptions)
+- sucesso (for success, 200 ok, completed)
 
-async def generate_ai_report(system_id: str, log_id: int, db: Session):
+Do NOT use any other words. Output ONLY 'normal', 'atenção', 'erro', or 'sucesso'."""
+
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {OPENAI_API_KEY}",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "model": "gpt-4o-mini",
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": f"Classify this log:\n{log_content}"}
+                    ],
+                    "temperature": 0.0,
+                    "max_tokens": 10
+                },
+                timeout=10.0
+            )
+            content = response.json()['choices'][0]['message']['content'].strip().lower()
+            
+            valid_categories = ["normal", "atenção", "erro", "sucesso"]
+            for cat in valid_categories:
+                if cat in content:
+                    return cat
+            return "normal" # Default fallback
+    except Exception as e:
+        print(f"Error classifying log: {e}")
+        return "normal"
+
+
+async def generate_ai_report(system_id: str, log_id: int):
+    # Analyzing status kept in memory (rudimentary)
     analyzing_logs[log_id] = "analyzing"
+    
+    # Create a fresh session for the background task
+    db = SessionLocal()
+    
     try:
         system = db.query(models.System).filter(models.System.id == system_id).first()
         log = db.query(models.Log).filter(models.Log.id == log_id).first()
         
-        if not system or not log: return
+        if not system or not log:
+            return
 
         tech_info = system.technical_info or "Nenhuma ficha técnica disponível."
         
         prompt = f"""You are a technical support AI.
-A system error has occurred.
+A system error or warning has occurred.
 
 SYSTEM TECHNICAL DETAILS (FICHA TÉCNICA):
 {tech_info}
@@ -79,7 +124,7 @@ CLIENT INFO:
 - Email: {system.client_email}
 - Status: {system.status}
 
-LOG ERROR:
+LOG CONTENT:
 {log.content}
 
 Generate a concise technical report explaining the possible cause and suggested solution.
@@ -114,14 +159,19 @@ Output in Brazilian Portuguese."""
             db.add(new_report)
             db.commit()
             
-            # Send Email
-            subject = f"🚨 RELATÓRIO DE INCIDENTE: {system.name}"
-            await send_report_email(system.maintenance_email, subject, report_content)
+            # Send Report to Discord REPORT Channel
+            discord_message = f"📋 **RELATÓRIO TÉCNICO: {system.name}**\n\n{report_content}"
+            if len(discord_message) > 2000:
+                discord_message = discord_message[:1990] + "..."
+            
+            await discord_client.send_message(DISCORD_REPORT_CHANNEL_ID, discord_message)
             
     except Exception as e:
         print(f"Error generating AI report: {e}")
     finally:
         analyzing_logs[log_id] = "completed"
+        db.close()
+
 
 def generate_system_id():
     """Generates a key like pbpm-<random_64_chars>"""
@@ -187,7 +237,7 @@ def get_system(system_id: str, db: Session = Depends(get_db)):
     return system
 
 @app.post("/webhook")
-def collect_log(
+async def collect_log(
     log: schemas.LogCreate, 
     background_tasks: BackgroundTasks,
     x_api_key: str = Header(..., alias="x-api-key"),
@@ -204,32 +254,44 @@ def collect_log(
     }
     content_str = json.dumps(log_data, default=str)
     
-    new_log_data = {
-        "system_id": system.id,
-        "content": content_str,
-        "level": log.level or "info"
-    }
-    if log.created_at:
-        new_log_data["created_at"] = log.created_at
-
-    new_log = models.Log(**new_log_data)
-    
     # --- LOG FILTERING LOGIC ---
-    # Check if the log message matches any active filters for this system
     filters = db.query(models.LogFilter).filter(models.LogFilter.system_id == system.id).all()
     for f in filters:
-        if f.pattern in log.message: # Simple contains check, could be expanded to regex
+        if f.pattern in log.message:
             return {"status": "filtered", "message": "Log blocked by system filter"}
     # ---------------------------
+
+    # 1. Classify with AI immediately (gpt-4o-mini)
+    classification = await classify_log_with_ai(log.message)
+    
+    new_log = models.Log(
+        system_id=system.id,
+        content=content_str,
+        level=classification, # Store the AI classification
+    )
+    if log.created_at:
+        new_log.created_at = log.created_at
 
     db.add(new_log)
     db.commit()
     db.refresh(new_log)
     
-    if new_log.level == "erro":
-        background_tasks.add_task(generate_ai_report, system.id, new_log.id, db)
+    # 2. Handle Alerts and Reports based on classification
+    if classification in ["erro", "atenção"]:
+        # Send Alert to ERROR Channel
+        icon = "🔴" if classification == "erro" else "⚠️"
+        alert_msg = f"{icon} **{classification.upper()}: {system.name}**\nContainer: `{log.container}`\n```{log.message[:1800]}```"
+        background_tasks.add_task(discord_client.send_message, DISCORD_ERROR_CHANNEL_ID, alert_msg)
+        
+        # Trigger detailed report generation (which sends to REPORT Channel)
+        background_tasks.add_task(generate_ai_report, system.id, new_log.id)
     
-    return {"status": "received", "log_id": new_log.id, "triggered_report": new_log.level == "erro"}
+    return {
+        "status": "stored", 
+        "log_id": new_log.id, 
+        "classification": classification,
+        "triggered_report": classification in ["erro", "atenção"]
+    }
 
 @app.get("/logs", response_model=list[schemas.LogResponse])
 def get_logs(
@@ -256,61 +318,7 @@ def get_logs(
 def get_systems(db: Session = Depends(get_db)):
     return db.query(models.System).all()
 
-@app.post("/analyze/{log_id}")
-async def analyze_log(log_id: int, db: Session = Depends(get_db)):
-    log = db.query(models.Log).filter(models.Log.id == log_id).first()
-    if not log:
-        raise HTTPException(status_code=404, detail="Log not found")
-        
-    log_content = log.content
-    
-    system_prompt = """You are a log classifier. 
-Your output MUST be one of these exact words:
-- normal (for routine, heartbeat, info)
-- atenção (for warning, slow, suspicious)
-- erro (for failure, crash, 500 error)
-- sucesso (for success, 200 ok, completed)
 
-Do NOT use any other words. Output ONLY 'normal', 'atenção', 'erro', or 'sucesso'."""
-
-    prompt = f"[INST] Classify this log: {log_content} [/INST]\nCategory:"
-    
-    try:
-        analyzing_logs[log_id] = "analyzing"
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                f"{OLLAMA_URL}/api/generate",
-                json={
-                    "model": "llama3.2:1b",
-                    "system": system_prompt,
-                    "prompt": prompt,
-                    "stream": False,
-                    "options": {
-                        "temperature": 0.0,
-                        "num_predict": 5,
-                        "stop": ["\n", ".", " ", ","],
-                        "keep_alive": -1 # Keep the model provisioned
-                    }
-                },
-                timeout=30.0
-            )
-            raw_analysis = response.json().get("response", "").strip().lower()
-            
-            # Robust parsing: ensure it matches one of the expected words
-            valid_categories = ["normal", "atenção", "erro", "sucesso"]
-            
-            # Simple fallback/cleaning
-            clean_analysis = "normal"
-            for cat in valid_categories:
-                if cat in raw_analysis:
-                    clean_analysis = cat
-                    break
-            
-            return {"analysis": clean_analysis, "raw": raw_analysis}
-    except Exception as e:
-        return {"error": str(e), "message": "Ollama might not be running or model not found"}
-    finally:
-        analyzing_logs[log_id] = "completed"
 
 @app.get("/stats/daily")
 def get_daily_stats(db: Session = Depends(get_db)):
@@ -409,17 +417,13 @@ async def cleanup_logs(
     logs_to_delete.delete(synchronize_session=False)
     db.commit()
     
-    # Send report email
-    subject = f"🧹 RELATÓRIO DE LIMPEZA: {system.name}"
-    body = f"""
-    Olá, o sistema realizou uma limpeza automática de logs inúteis.
-    
-    Padrão removido: "{pattern}"
-    Total de itens excluídos: {count}
-    
-    Isso ajuda a manter o banco de dados otimizado e reduz custos de análise.
-    """
-    background_tasks.add_task(send_report_email, system.maintenance_email, subject, body)
+    # Send validation to Discord
+    discord_message = f"**🧹 RELATÓRIO DE LIMPEZA: {system.name}**\n\n" \
+                      f"Padrão removido: `{pattern}`\n" \
+                      f"Total de itens excluídos: **{count}**\n\n" \
+                      f"Isso ajuda a manter o banco de dados otimizado."
+                      
+    background_tasks.add_task(discord_client.send_message, DISCORD_REPORT_CHANNEL_ID, discord_message)
     
     return {"status": "success", "cleaned_count": count}
 
