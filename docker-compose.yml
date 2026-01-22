@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   db:
     image: postgres:15
@@ -13,18 +11,18 @@ services:
       - pgdata:/var/lib/postgresql/data
 
   backend:
-    build: .
+    build: ./backend
     environment:
       - DATABASE_URL=postgresql://pbpm_user:pbpm_pass@db:5432/logs_db
       - MASTER_KEY=${MASTER_KEY}
-      - OLLAMA_URL=http://host.docker.internal:11434
       - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN}
+      - DISCORD_ERROR_CHANNEL_ID=${DISCORD_ERROR_CHANNEL_ID}
+      - DISCORD_REPORT_CHANNEL_ID=${DISCORD_REPORT_CHANNEL_ID}
     depends_on:
       - db
     ports:
       - "127.0.0.1:8000:8000"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
 
   frontend:
     build:
