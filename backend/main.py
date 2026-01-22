@@ -7,9 +7,11 @@ import string
 import os
 import json
 import httpx
+import asyncio
 from datetime import datetime, timedelta
 import models, schemas
 import discord_client
+import ai_service
 from database import engine, get_db, SessionLocal
 
 # Create tables with retry logic
@@ -43,135 +45,16 @@ app.add_middleware(
 )
 
 MASTER_KEY = os.getenv("MASTER_KEY")
-OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 DISCORD_ERROR_CHANNEL_ID = os.getenv("DISCORD_ERROR_CHANNEL_ID")
 DISCORD_REPORT_CHANNEL_ID = os.getenv("DISCORD_REPORT_CHANNEL_ID")
-
 
 # Status tracking for logs being analyzed by AI
 analyzing_logs = {}
 
-async def classify_log_with_ai(log_content: str):
-    """
-    Classifies the log using OpenAI gpt-4o-mini.
-    Returns: 'normal', 'atenção', 'erro', or 'sucesso'
-    """
-    system_prompt = """You are a log classifier. 
-Your output MUST be one of these exact words:
-- normal (for routine, heartbeat, info)
-- atenção (for warning, slow, suspicious, potential issues)
-- erro (for failure, crash, 500 error, exceptions)
-- sucesso (for success, 200 ok, completed)
-
-Do NOT use any other words. Output ONLY 'normal', 'atenção', 'erro', or 'sucesso'."""
-
-    try:
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                "https://api.openai.com/v1/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {OPENAI_API_KEY}",
-                    "Content-Type": "application/json"
-                },
-                json={
-                    "model": "gpt-4o-mini",
-                    "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": f"Classify this log:\n{log_content}"}
-                    ],
-                    "temperature": 0.0,
-                    "max_tokens": 10
-                },
-                timeout=10.0
-            )
-            content = response.json()['choices'][0]['message']['content'].strip().lower()
-            
-            valid_categories = ["normal", "atenção", "erro", "sucesso"]
-            for cat in valid_categories:
-                if cat in content:
-                    return cat
-            return "normal" # Default fallback
-    except Exception as e:
-        print(f"Error classifying log: {e}")
-        return "normal"
-
-
-async def generate_ai_report(system_id: str, log_id: int):
-    # Analyzing status kept in memory (rudimentary)
-    analyzing_logs[log_id] = "analyzing"
-    
-    # Create a fresh session for the background task
-    db = SessionLocal()
-    
-    try:
-        system = db.query(models.System).filter(models.System.id == system_id).first()
-        log = db.query(models.Log).filter(models.Log.id == log_id).first()
-        
-        if not system or not log:
-            return
-
-        tech_info = system.technical_info or "Nenhuma ficha técnica disponível."
-        
-        prompt = f"""You are a technical support AI.
-A system error or warning has occurred.
-
-SYSTEM TECHNICAL DETAILS (FICHA TÉCNICA):
-{tech_info}
-
-CLIENT INFO:
-- Name: {system.client_name}
-- Email: {system.client_email}
-- Status: {system.status}
-
-LOG CONTENT:
-{log.content}
-
-Generate a concise technical report explaining the possible cause and suggested solution.
-Keep it professional and technical.
-Output in Brazilian Portuguese."""
-
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                "https://api.openai.com/v1/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {OPENAI_API_KEY}",
-                    "Content-Type": "application/json"
-                },
-                json={
-                    "model": "gpt-4o-mini",
-                    "messages": [
-                        {"role": "system", "content": "You are a tech specialist assistant."},
-                        {"role": "user", "content": prompt}
-                    ],
-                    "temperature": 0.7
-                },
-                timeout=60.0
-            )
-            report_content = response.json()['choices'][0]['message']['content']
-            
-            # Save report to DB
-            new_report = models.Report(
-                system_id=system_id,
-                log_id=log_id,
-                content=report_content
-            )
-            db.add(new_report)
-            db.commit()
-            
-            # Send Report to Discord REPORT Channel
-            discord_message = f"📋 **RELATÓRIO TÉCNICO: {system.name}**\n\n{report_content}"
-            if len(discord_message) > 2000:
-                discord_message = discord_message[:1990] + "..."
-            
-            await discord_client.send_message(DISCORD_REPORT_CHANNEL_ID, discord_message)
-            
-    except Exception as e:
-        print(f"Error generating AI report: {e}")
-    finally:
-        analyzing_logs[log_id] = "completed"
-        db.close()
-
+@app.on_event("startup")
+async def startup_event():
+    # Start Discord Bot in background
+    asyncio.create_task(discord_client.start_bot())
 
 def generate_system_id():
     """Generates a key like pbpm-<random_64_chars>"""
@@ -261,8 +144,8 @@ async def collect_log(
             return {"status": "filtered", "message": "Log blocked by system filter"}
     # ---------------------------
 
-    # 1. Classify with AI immediately (gpt-4o-mini)
-    classification = await classify_log_with_ai(log.message)
+    # 1. Classify with AI immediately
+    classification = await ai_service.classify_log_with_ai(log.message)
     
     new_log = models.Log(
         system_id=system.id,
@@ -276,21 +159,33 @@ async def collect_log(
     db.commit()
     db.refresh(new_log)
     
-    # 2. Handle Alerts and Reports based on classification
+    # 2. Handle Alerts - BUT NO AUTO REPORT
     if classification in ["erro", "atenção"]:
-        # Send Alert to ERROR Channel
+        # Send Alert to ERROR Channel with Call to Action
         icon = "🔴" if classification == "erro" else "⚠️"
-        alert_msg = f"{icon} **{classification.upper()}: {system.name}**\nContainer: `{log.container}`\n```{log.message[:1800]}```"
+        
+        # User requested: send the mention to him (e.g. @Helios) if possible, but we don't know his ID here.
+        # He said "enviar a marcação dele".
+        # For now we will just put a generic message, or we can tag a role if checking env var?
+        # The user's request: "Eu vou enviar a marcação dele (@Helios ali) e ele vai responder..."
+        # It implies he will mention the bot.
+        # But for the alert the bot sends, he wants the bot to send the ID.
+        
+        # "coloca pra ele enviar também o ID do log"
+        
+        alert_msg = f"{icon} **{classification.upper()}: {system.name}**\n" \
+                    f"**Log ID:** `{new_log.id}`\n" \
+                    f"Container: `{log.container}`\n" \
+                    f"```{log.message[:1000]}```\n" \
+                    f"💡 *Para gerar relatório, marque-me com o ID: @LogBot {new_log.id}*"
+
         background_tasks.add_task(discord_client.send_message, DISCORD_ERROR_CHANNEL_ID, alert_msg)
         
-        # Trigger detailed report generation (which sends to REPORT Channel)
-        background_tasks.add_task(generate_ai_report, system.id, new_log.id)
-    
     return {
         "status": "stored", 
         "log_id": new_log.id, 
         "classification": classification,
-        "triggered_report": classification in ["erro", "atenção"]
+        "triggered_report": False # No auto report anymore
     }
 
 @app.get("/logs", response_model=list[schemas.LogResponse])
@@ -318,28 +213,39 @@ def get_logs(
 def get_systems(db: Session = Depends(get_db)):
     return db.query(models.System).all()
 
-
-
-@app.get("/stats/daily")
-def get_daily_stats(db: Session = Depends(get_db)):
-    # Get last 7 days of activity
-    days_ago = 7
-    start_date = datetime.now() - timedelta(days=days_ago)
+@app.get("/stats")
+def get_stats(range: str = "7d", db: Session = Depends(get_db)):
+    # Determine start date and grouping
+    now = datetime.now()
     
-    # Query logs per day and system
-    # This is a bit complex in SQLAlchemy for SQLite, simplifies here for logic
+    if range == "1h":
+        start_date = now - timedelta(hours=1)
+        # Group by minute: YYYY-MM-DD HH:MM
+        date_format_len = 16 
+    elif range == "24h":
+        start_date = now - timedelta(hours=24)
+        # Group by hour: YYYY-MM-DD HH
+        date_format_len = 13
+    elif range == "30d":
+        start_date = now - timedelta(days=30)
+        date_format_len = 10 # YYYY-MM-DD
+    else: # Default 7d
+        start_date = now - timedelta(days=7)
+        date_format_len = 10
+    
+    # Query logs
     results = db.query(
-        func.date(models.Log.created_at).label('date'),
+        func.substr(models.Log.created_at, 1, date_format_len).label('time_bucket'),
         models.System.name,
         func.count(models.Log.id).label('count')
-    ).join(models.System).filter(models.Log.created_at >= start_date).group_by('date', models.System.name).all()
+    ).join(models.System).filter(models.Log.created_at >= start_date).group_by('time_bucket', models.System.name).all()
     
     # Format for Recharts
     formatted = {}
-    for date, name, count in results:
-        if date not in formatted:
-            formatted[date] = {"date": date}
-        formatted[date][name] = count
+    for bucket, name, count in results:
+        if bucket not in formatted:
+            formatted[bucket] = {"date": bucket}
+        formatted[bucket][name] = count
         
     return sorted(list(formatted.values()), key=lambda x: x['date'])
 
@@ -407,8 +313,7 @@ async def cleanup_logs(
         raise HTTPException(status_code=404, detail="System not found")
         
     pattern = cleanup_data.pattern
-    # Delete logs that match the pattern
-    # In SQLite/Postgres we can use LIKE or direct match
+    
     logs_to_delete = db.query(models.Log).filter(
         models.Log.system_id == system_id,
         models.Log.content.contains(pattern)

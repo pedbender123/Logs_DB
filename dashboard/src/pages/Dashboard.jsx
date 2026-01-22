@@ -10,12 +10,13 @@ const Dashboard = ({ apiUrl }) => {
     const [stats, setStats] = useState([]);
     const [logs, setLogs] = useState([]);
     const [loading, setLoading] = useState(true);
+    const [timeRange, setTimeRange] = useState('24h');
 
     useEffect(() => {
         const fetchData = async () => {
             try {
                 const [statsRes, logsRes] = await Promise.all([
-                    axios.get(`${apiUrl}/stats/daily`),
+                    axios.get(`${apiUrl}/stats?range=${timeRange}`),
                     axios.get(`${apiUrl}/logs?limit=50`)
                 ]);
                 setStats(statsRes.data);
@@ -27,7 +28,7 @@ const Dashboard = ({ apiUrl }) => {
             }
         };
         fetchData();
-    }, [apiUrl]);
+    }, [apiUrl, timeRange]);
 
     if (loading) return (
         <div className="flex items-center justify-center min-h-[400px]">
@@ -55,12 +56,44 @@ const Dashboard = ({ apiUrl }) => {
         { name: 'Normal', value: logs.filter(l => l.level === 'info' || l.level === 'normal').length, color: '#64748b' },
     ].filter(d => d.value > 0);
 
+    // Helper to format date based on range
+    const formatXAxis = (tickItem) => {
+        const date = new Date(tickItem);
+        if (timeRange === '1h' || timeRange === '24h') {
+            return date.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+        }
+        return date.toLocaleDateString('pt-BR', { day: '2-digit', month: 'short' });
+    };
+
+    const ranges = [
+        { label: '1 Hora', value: '1h' },
+        { label: '24 Horas', value: '24h' },
+        { label: '7 Dias', value: '7d' },
+        { label: '30 Dias', value: '30d' },
+    ];
+
     return (
         <div className="space-y-8 animate-in">
             <div className="flex items-center justify-between">
                 <div>
                     <h2 className="text-3xl font-bold text-white tracking-tight">Dashboard Executiva</h2>
                     <p className="text-slate-400">Visão geral de atividade e saúde dos sistemas</p>
+                </div>
+
+                {/* Time Range Selector */}
+                <div className="flex bg-slate-800 rounded-lg p-1 gap-1">
+                    {ranges.map(r => (
+                        <button
+                            key={r.value}
+                            onClick={() => setTimeRange(r.value)}
+                            className={`px-3 py-1 text-sm font-medium rounded-md transition-all ${timeRange === r.value
+                                    ? 'bg-blue-600 text-white shadow-sm'
+                                    : 'text-slate-400 hover:text-white hover:bg-slate-700'
+                                }`}
+                        >
+                            {r.label}
+                        </button>
+                    ))}
                 </div>
             </div>
 
@@ -102,7 +135,7 @@ const Dashboard = ({ apiUrl }) => {
                 <div className="col-span-2 card p-6 bg-slate-900/40">
                     <h3 className="text-lg font-bold text-white mb-6 flex items-center gap-2">
                         <Activity size={20} className="text-blue-500" />
-                        Atividade por Sistema (Últimos 7 dias)
+                        Atividade por Sistema
                     </h3>
                     <div className="h-[350px] w-full">
                         <ResponsiveContainer width="100%" height="100%">
@@ -112,12 +145,16 @@ const Dashboard = ({ apiUrl }) => {
                                     dataKey="date"
                                     stroke="#64748b"
                                     fontSize={12}
-                                    tickFormatter={(str) => new Date(str).toLocaleDateString('pt-BR', { day: '2-digit', month: 'short' })}
+                                    tickFormatter={formatXAxis}
                                 />
                                 <YAxis stroke="#64748b" fontSize={12} />
                                 <Tooltip
                                     contentStyle={{ backgroundColor: '#0f172a', borderColor: '#334155', borderRadius: '8px', color: '#f1f5f9' }}
                                     itemStyle={{ fontSize: '12px' }}
+                                    labelFormatter={(label) => {
+                                        const d = new Date(label);
+                                        return d.toLocaleString('pt-BR');
+                                    }}
                                 />
                                 <Legend iconType="circle" />
                                 {systemKeys.map((key, index) => (
